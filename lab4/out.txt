@@ -1,0 +1,12 @@
+BigInt[]
+264
+BigInt[264]
+-36
+BigInt[258]
+10
+BigInt[10, 258]
+287
+BigInt[287, 10, 258]
+-22
+BigInt[10, 258]
+-38

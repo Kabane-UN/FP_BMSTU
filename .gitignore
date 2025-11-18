@@ -9,3 +9,6 @@
 *.o
 *.hi
 *.exe
+*.jl
+Main
+.vscode

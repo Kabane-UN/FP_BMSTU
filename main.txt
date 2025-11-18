@@ -1,0 +1,440 @@
+{-# LANGUAGE FlexibleContexts #-}
+
+module Main where
+
+import Control.Monad (when)
+import Control.Monad.Except
+import Control.Monad.State
+  ( MonadIO (liftIO),
+    MonadState (get, state),
+    StateT (runStateT),
+    evalStateT,
+    gets,
+    modify,
+  )
+import Data.Char (isDigit, isSpace)
+import Data.Functor (void)
+import Data.List (intercalate, words)
+import Data.Map qualified as Map
+import System.Exit (exitSuccess)
+import System.IO
+
+-- Типы данных для стека и состояния интерпретатора
+type Stack = [Int]
+
+type Dictionary = Map.Map String ([Token], String)
+
+type WordBody = [Token]
+
+data Token
+  = Number Int
+  | Word String
+  | StringLiteral String
+  | IfThen WordBody WordBody
+  | BeginUntil WordBody
+  | BeginWhile WordBody WordBody
+  deriving (Show, Eq)
+
+data ForthState = ForthState
+  { stack :: Stack,
+    dictionary :: Dictionary,
+    compiling :: Bool,
+    currentWord :: String,
+    wordBody :: [Token],
+    inputSource :: [String]
+  }
+  deriving (Show)
+
+type ForthM = ExceptT String (StateT ForthState IO)
+
+-- Начальное состояние
+initialState :: ForthState
+initialState =
+  ForthState
+    { stack = [],
+      dictionary = builtins,
+      compiling = False,
+      currentWord = "",
+      wordBody = [],
+      inputSource = []
+    }
+
+-- Встроенные слова Forth
+builtins :: Dictionary
+builtins =
+  Map.fromList
+    [ ("+", ([], "Сложение")),
+      ("-", ([], "Вычитание")),
+      ("*", ([], "Умножение")),
+      ("/", ([], "Деление")),
+      ("mod", ([], "Остаток от деления")),
+      ("dup", ([], "Дублирование вершины стека")),
+      ("drop", ([], "Удаление вершины стека")),
+      ("swap", ([], "Обмен двух верхних элементов")),
+      ("over", ([], "Копирование второго элемента")),
+      (".", ([], "Вывод вершины стека")),
+      (".s", ([], "Показать стек")),
+      ("emit", ([], "Вывод символа")),
+      ("cr", ([], "Новая строка")),
+      ("=", ([], "Равенство")),
+      ("<", ([], "Меньше")),
+      (">", ([], "Больше")),
+      ("and", ([], "Логическое И")),
+      ("or", ([], "Логическое ИЛИ")),
+      ("not", ([], "Логическое НЕ")),
+      ("@", ([], "Чтение из памяти")),
+      ("!", ([], "Запись в память")),
+      ("key", ([], "Чтение символа")),
+      ("bye", ([], "Выход"))
+    ]
+
+-- Основная функция интерпретатора
+runForth :: IO ()
+runForth = do
+  putStrLn "Forth Interpreter (Haskell)"
+  putStrLn "Введите 'bye' для выхода"
+  void $ evalStateT (runExceptT repl) initialState
+  where
+    repl :: ForthM ()
+    repl = do
+      liftIO $ putStr "> "
+      liftIO $ hFlush stdout
+      input <- liftIO getLine
+      if input == "bye"
+        then return ()
+        else do
+          interpretLine input `catchError` (\err -> liftIO $ putStrLn $ "Ошибка: " ++ err)
+          repl
+
+-- Интерпретация строки
+interpretLine :: String -> ForthM ()
+interpretLine line = do
+  let tokens = parseTokens line
+  interpretTokens tokens
+
+-- Парсинг токенов
+parseTokens :: String -> [Token]
+parseTokens input =
+  let wordsList = splitWords input
+   in map parseToken wordsList
+  where
+    splitWords :: String -> [String]
+    splitWords = words
+
+    parseToken :: String -> Token
+    parseToken s
+      | all isDigit s = Number (read s)
+      | head s == '-' && not (null (tail s)) && all isDigit (tail s) =
+          Number (read s)
+      | head s == '"' && last s == '"' =
+          StringLiteral (init $ tail s)
+      | otherwise = Word s
+
+-- Интерпретация списка токенов
+interpretTokens :: [Token] -> ForthM ()
+interpretTokens [] = return ()
+interpretTokens (token : tokens) = do
+  state <- get
+  case token of
+    Number n -> do
+      modify $ \s -> s {stack = n : stack s}
+      interpretTokens tokens
+    Word ":" -> startWordDefinition tokens
+    Word ";" -> endWordDefinition
+    Word "if" -> handleIf tokens
+    Word "then" -> interpretTokens tokens
+    Word "else" -> interpretTokens tokens
+    Word "begin" -> handleBegin tokens
+    Word "until" -> interpretTokens tokens
+    Word "while" -> interpretTokens tokens
+    Word "repeat" -> interpretTokens tokens
+    Word name -> do
+      dict <- gets dictionary
+      case Map.lookup name dict of
+        Just (body, _) -> do
+          if null body
+            then executeBuiltin name
+            else interpretTokens body
+          interpretTokens tokens
+        Nothing -> throwError $ "Неизвестное слово: " ++ name
+    StringLiteral str -> do
+      modify $ \s -> s {stack = map fromEnum str ++ stack s}
+      interpretTokens tokens
+    _ -> interpretTokens tokens
+
+-- Начало определения слова
+startWordDefinition :: [Token] -> ForthM ()
+startWordDefinition tokens = case tokens of
+    (Word name):rest -> do
+        modify $ \s -> s {
+            compiling = True,
+            currentWord = name,
+            wordBody = []
+        }
+        -- Немедленно добавляем слово в словарь (пустое тело)
+        dict <- gets dictionary
+        modify $ \s -> s {
+            dictionary = Map.insert name ([], "пользовательское слово") dict
+        }
+        interpretTokens rest
+    _ -> throwError "Ожидалось имя слова после ':'"
+
+-- Завершение определения слова
+endWordDefinition :: ForthM ()
+endWordDefinition = do
+    state <- get
+    when (compiling state) $ do
+        let wordName = currentWord state
+        let body = reverse $ wordBody state
+        -- Обновляем тело слова
+        modify $ \s -> s {
+            compiling = False,
+            currentWord = "",
+            wordBody = [],
+            dictionary = Map.insert wordName (body, "пользовательское слово") (dictionary s)
+        }
+
+-- Выполнение встроенных слов
+executeBuiltin :: String -> ForthM ()
+executeBuiltin name = do
+  state_ <- get
+  let stk = stack state_
+
+  case name of
+    "+" -> binaryOp (+)
+    "-" -> binaryOp (-)
+    "*" -> binaryOp (*)
+    "/" -> binaryOp div
+    "mod" -> binaryOp mod
+    "dup" -> case stk of
+      x : _ -> modify $ \s -> s {stack = x : stk}
+      [] -> throwError "Стек пуст для dup"
+    "drop" -> case stk of
+      _ : xs -> modify $ \s -> s {stack = xs}
+      [] -> throwError "Стек пуст для drop"
+    "swap" -> case stk of
+      x : y : xs -> modify $ \s -> s {stack = y : x : xs}
+      _ -> throwError "Недостаточно элементов для swap"
+    "over" -> case stk of
+      x : y : xs -> modify $ \s -> s {stack = y : x : y : xs}
+      _ -> throwError "Недостаточно элементов для over"
+    "." -> case stk of
+      x : xs -> do
+        liftIO $ putStr (show x ++ " ")
+        modify $ \s -> s {stack = xs}
+      [] -> throwError "Стек пуст для ."
+    ".s" -> do
+      liftIO $ putStrLn $ "<" ++ show (length stk) ++ "> " ++ unwords (map show stk)
+    "emit" -> case stk of
+      x : xs -> do
+        liftIO $ putChar (toEnum x)
+        modify $ \s -> s {stack = xs}
+      [] -> throwError "Стек пуст для emit"
+    "cr" -> liftIO $ putStrLn ""
+    "=" -> binaryOp (\a b -> if a == b then 1 else 0)
+    "<" -> binaryOp (\a b -> if a < b then 1 else 0)
+    ">" -> binaryOp (\a b -> if a > b then 1 else 0)
+    "and" -> binaryOp (\a b -> if a /= 0 && b /= 0 then 1 else 0)
+    "or" -> binaryOp (\a b -> if a /= 0 || b /= 0 then 1 else 0)
+    "not" -> unaryOp (\a -> if a == 0 then 1 else 0)
+    "key" -> do
+      char <- liftIO getChar
+      modify $ \s -> s {stack = fromEnum char : stack s}
+    "bye" -> liftIO $ putStrLn "До свидания!" >> exitSuccess
+    _ -> throwError $ "Неизвестное встроенное слово: " ++ name
+  where
+    binaryOp :: (Int -> Int -> Int) -> ForthM ()
+    binaryOp op = do
+      stk <- gets stack
+      case stk of
+        x : y : xs -> modify $ \s -> s {stack = op y x : xs}
+        _ -> throwError "Недостаточно элементов для бинарной операции"
+
+    unaryOp :: (Int -> Int) -> ForthM ()
+    unaryOp op = do
+      stk <- gets stack
+      case stk of
+        x : xs -> modify $ \s -> s {stack = op x : xs}
+        _ -> throwError "Недостаточно элементов для унарной операции"
+
+-- Парсинг условного оператора if
+-- Обработка условного оператора if
+handleIf :: [Token] -> ForthM ()
+handleIf tokens = do
+  state <- get
+  if compiling state
+    then do
+      -- В режиме компиляции
+      modify $ \s -> s {wordBody = Word "if" : wordBody s}
+      interpretTokens tokens
+    else do
+      -- В режиме выполнения
+      stk <- gets stack
+      case stk of
+        cond : rest -> do
+          modify $ \s -> s {stack = rest}
+          if cond /= 0
+            then interpretTokens (takeUntilElse tokens) -- выполняем then-часть
+            else interpretTokens (findElseBranch tokens) -- выполняем else-часть
+        [] -> throwError "Стек пуст для if"
+
+-- Взять токены до else или then
+takeUntilElse :: [Token] -> [Token]
+takeUntilElse [] = []
+takeUntilElse (Word "else" : _) = []
+takeUntilElse (Word "then" : _) = []
+takeUntilElse (x : xs) = x : takeUntilElse xs
+
+-- Найти ветку else
+findElseBranch :: [Token] -> [Token]
+findElseBranch [] = []
+findElseBranch (Word "else" : rest) = takeUntilThen rest
+findElseBranch (_ : xs) = findElseBranch xs
+
+-- Взять токены до then
+takeUntilThen :: [Token] -> [Token]
+takeUntilThen [] = []
+takeUntilThen (Word "then" : _) = []
+takeUntilThen (x : xs) = x : takeUntilThen xs
+
+-- Парсинг циклов
+handleBegin :: [Token] -> ForthM ()
+handleBegin tokens = do
+  state <- get
+  if compiling state
+    then do
+      modify $ \s -> s {wordBody = Word "begin" : wordBody s}
+      interpretTokens tokens
+    else do
+      -- В режиме выполнения - запускаем цикл
+      interpretLoop tokens
+
+interpretLoop :: [Token] -> ForthM ()
+interpretLoop tokens = do
+  -- Сохраняем позицию начала цикла
+  let loopStart = findLoopStart tokens
+  -- Выполняем тело до while
+  interpretTokens loopStart
+
+  -- Проверяем условие while
+  stk <- gets stack
+  case stk of
+    cond : rest -> do
+      modify $ \s -> s {stack = rest}
+      if cond /= 0
+        then do
+          -- Условие истинно - выполняем часть после while
+          let afterWhile = findAfterWhile tokens
+          interpretTokens afterWhile
+          -- Возвращаемся к началу цикла
+          interpretLoop tokens
+        else do
+          -- Условие ложно - выходим из цикла
+          interpretTokens (findAfterRepeat tokens)
+    [] -> throwError "Стек пуст для while"
+
+-- Найти начало цикла (до while)
+findLoopStart :: [Token] -> [Token]
+findLoopStart [] = []
+findLoopStart (Word "while" : _) = []
+findLoopStart (x : xs) = x : findLoopStart xs
+
+-- Найти часть после while (до repeat)
+findAfterWhile :: [Token] -> [Token]
+findAfterWhile [] = []
+findAfterWhile (Word "while" : xs) = takeUntilRepeat xs
+findAfterWhile (_ : xs) = findAfterWhile xs
+
+-- Найти часть после repeat
+findAfterRepeat :: [Token] -> [Token]
+findAfterRepeat [] = []
+findAfterRepeat (Word "repeat" : xs) = xs
+findAfterRepeat (_ : xs) = findAfterRepeat xs
+
+-- Взять токены до repeat
+takeUntilRepeat :: [Token] -> [Token]
+takeUntilRepeat [] = []
+takeUntilRepeat (Word "repeat" : _) = []
+takeUntilRepeat (x : xs) = x : takeUntilRepeat xs
+
+-- Обработка while в режиме компиляции
+handleWhile :: [Token] -> ForthM ()
+handleWhile tokens = do
+  state <- get
+  when (compiling state) $ do
+    modify $ \s -> s {wordBody = Word "while" : wordBody s}
+    interpretTokens tokens
+
+-- Обработка repeat
+handleRepeat :: [Token] -> ForthM ()
+handleRepeat tokens = do
+  state <- get
+  if compiling state
+    then do
+      modify $ \s -> s {wordBody = Word "repeat" : wordBody s}
+      interpretTokens tokens
+    else do
+      -- В режиме выполнения repeat просто завершает текущую итерацию
+      interpretTokens tokens
+
+-- Вспомогательные функции
+showToken :: Token -> String
+showToken (Number n) = show n
+showToken (Word w) = w
+showToken (StringLiteral s) = "\"" ++ s ++ "\""
+showToken _ = ""
+
+-- Функция для запуска тестов
+testForth :: IO ()
+testForth = do
+  let testCases =
+        [ "1 2 + .", -- 3
+          "5 3 - .", -- 2
+          "2 3 * .", -- 6
+          "10 2 / .", -- 5
+          "7 3 mod .", -- 1
+          "5 dup . .", -- 5 5
+          "1 2 swap . .", -- 1 2
+          "1 2 over . . .", -- 1 2 1
+          "5 5 = .", -- 1 (true)
+          "5 3 = .", -- 0 (false)
+          "3 5 < .", -- 1 (true)
+          "5 3 < .", -- 0 (false)
+          "5 3 > .", -- 1 (true)
+          "3 5 > .", -- 0 (false)
+          "1 if 42 then .", -- 42
+          "0 if 42 then .", -- (nothing)
+          "1 if 10 else 20 then .", -- 10
+          "0 if 10 else 20 then .", -- 20
+          "0 begin 1+ dup 5 = until .", -- 5
+          "5 begin 1- dup 0= until .", -- 0
+          "0 begin dup 5 < while 1 + repeat .", -- 5
+          "10 begin dup 0 > while 1 - repeat .", -- 0
+          ": factorial dup 1 > if dup 1- factorial * then ; 5 factorial .", -- 120
+          ": abs 0 . dup 0 < if negate then ; -5 ." -- 5
+        ]
+
+  putStrLn "Запуск тестов:"
+  mapM_ runTest testCases
+  where
+    runTest code = do
+      putStrLn $ "Тест: " ++ code
+      result <- runStateT (runExceptT (interpretLine code)) initialState
+      case result of
+        (Left err, _) -> putStrLn $ "  Ошибка: " ++ err
+        (Right _, state) -> putStrLn $ "  Стек: " ++ show (stack state)
+
+-- Основная функция
+main :: IO ()
+main = do
+  putStrLn "Выберите режим:"
+  putStrLn "1 - Интерактивный интерпретатор"
+  putStrLn "2 - Запуск тестов"
+  putStrLn "3 - Выход"
+
+  choice <- getLine
+  case choice of
+    "1" -> runForth
+    "2" -> testForth
+    "3" -> return ()
+    _ -> putStrLn "Неверный выбор" >> main

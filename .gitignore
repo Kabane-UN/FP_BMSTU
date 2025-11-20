@@ -12,3 +12,6 @@
 *.jl
 Main
 .vscode
+.bsp
+.scala-build
+.metals

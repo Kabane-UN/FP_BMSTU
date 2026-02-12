@@ -1,0 +1,7 @@
+(Union
+  (Concat
+    (Star (Symbol 'a'))
+    (Concat
+      (Symbol 'b')
+      (Star (Union (Symbol 'c') (Symbol 'd')))))
+  (Symbol 'e'))

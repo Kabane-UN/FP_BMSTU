@@ -1,0 +1,54 @@
+*$FROM LibraryEx
+$EXTERN LoadExpr;
+
+$ENTRY Go {
+    = <Prout <AsString <LoadExpr <Arg 1>>>>;
+}
+
+/*
+t.RegEx ::= Epsilon                 - пустая строка
+           | (Symbol s.CHAR)        - символ
+           | (Union t.RegEx t.RegEx) - объединение
+           | (Concat t.RegEx t.RegEx) - конкатенация
+           | (Star t.RegEx)         - замыкание
+*/
+AsString {
+    e.Expr = <ToString e.Expr 0>;
+}
+
+
+ToString {
+    Epsilon e.Ctx = "";
+    
+    (Symbol s.CHAR) e.Ctx = <Escape s.CHAR>;
+    
+    (Union t.RegEx1 t.RegEx2) e.Ctx, <Compare e.Ctx 1>: '+' = 
+        '(' <ToString t.RegEx1 1> '|' <ToString t.RegEx2 1> ')';
+    (Union t.RegEx1 t.RegEx2) e.Ctx = 
+        <ToString t.RegEx1 1> '|' <ToString t.RegEx2 1>;
+
+    (Concat t.RegEx1 t.RegEx2) e.Ctx, <Compare e.Ctx 2>: '+' = 
+        '(' <ToString t.RegEx1 2> <ToString t.RegEx2 2> ')';
+    (Concat t.RegEx1 t.RegEx2) e.Ctx = 
+        <ToString t.RegEx1 2> <ToString t.RegEx2 2>;
+    
+    (Star t.RegEx1) e.Ctx = 
+        <AddStar <ToString t.RegEx1 3>>;
+}
+
+AddStar {
+    s.CHAR = s.CHAR '*';
+    
+    '(' e.Inner ')' = '(' e.Inner ')' '*';
+    
+    s.Expr = '(' s.Expr ')' '*';
+}
+
+Escape {
+    '|' = "\\|";
+    '*' = "\\*";
+    '(' = "\\(";
+    ')' = "\\)";
+    '\\' = "\\\\";
+    s.CHAR = s.CHAR;
+}

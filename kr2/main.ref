@@ -1,0 +1,43 @@
+*$FROM LibraryEx
+$EXTERN ArgList;
+$EXTERN LoadFile;
+$EXTERN SaveFile;
+$ENTRY Go {
+    , <IsStd<Lenw <ArgList>>>: '+' = <Prout <ProcessFiles <ParseArgs<ArgList>>>>;
+    , <IsStd<Lenw <ArgList>>>: '0' = <ProcessStdin (<Card>) 0>;
+    e.Any = <Putout 0 'Bad args number'> <Exit 1>;
+}
+TToE {
+    (e.Expr) = e.Expr;
+}
+TsToE {
+    (e.Expr) = e.Expr ;
+    (e.Expr) e.Else = e.Expr '\n' <TsToE e.Else>;
+    =;
+}
+IsStd {
+    s.NUM e.Expr = <Compare s.NUM 1>
+}
+
+ParseArgs{
+  t.trash e.filename = e.filename;
+  e.Any = <Putout 0 'Bad args'> <Prout e.Any> <Exit 1>;
+}
+
+ProcessStdin{
+  (e.Some 0) s.N = <Prout<TToE <Numerate s.N (e.Some)>> '\n'>;
+  (e.Some) s.N, <Lenw e.Some>: 0 e.Some = <Prout<TToE <Numerate s.N (e.Some)>>> <ProcessStdin (<Card>) <Add s.N 0>>;
+  (e.Some) s.N = <Prout<TToE <Numerate s.N (e.Some)>>> <ProcessStdin (<Card>) <Add s.N 1>>;
+}
+
+ProcessFiles {
+    (e.File) = <TsToE <Numerate 0 <LoadFile e.File>>>;
+    (e.File) e.Rest = <TsToE <Numerate 0 <LoadFile e.File>>> '\n' <ProcessFiles e.Rest>;
+     = ;
+}
+
+Numerate {
+  s.N (e.Line) e.Rest, <Lenw e.Line>: 0 e.Line = (e.Line) <Numerate s.N e.Rest>;
+  s.N (e.Line) e.Rest = (s.N e.Line) <Numerate <Add s.N 1> e.Rest>;
+  s.N =;
+}

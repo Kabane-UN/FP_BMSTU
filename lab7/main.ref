@@ -1,0 +1,54 @@
+*$FROM LibraryEx
+$EXTERN ArgList;
+$EXTERN LoadFile;
+$EXTERN SaveFile;
+$ENTRY Go {
+    , <IsStd<Lenw <ArgList>>>: '+' = <Prout <ProcessFiles <ParseArgs<ArgList>>>>;
+    , <IsStd<Lenw <ArgList>>>: '0' = <ProcessStdin (<Card>) <ParseArgs<ArgList>>>;
+    e.Any = <Putout 0 'Bad args number'> <Exit 1>;
+}
+TToE {
+    (e.Expr) = e.Expr
+}
+TsToE {
+    (e.Expr) = e.Expr ;
+    (e.Expr) e.Else = e.Expr '\n' <TsToE e.Else>;
+    =;
+}
+IsStd {
+    s.NUM e.Expr = <Compare s.NUM 2>
+}
+
+ParseArgs{
+  t.trash ( 's' '/' e.If '/' e.Of '/' ) e.filename = (e.If) (e.Of) e.filename;
+  t.trash ( 's' '/' e.If '/' e.Of '/g' ) e.filename = 'g' (e.If) (e.Of) e.filename;
+  e.Any = <Putout 0 'Bad args'> <Prout e.Any> <Exit 1>;
+}
+
+ProcessStdin{
+  (e.Some 0) e.Params = <Prout<TToE <Replace e.Params (e.Some)>> '\n'>;
+  (e.Some) e.Params = <Prout<TToE <Replace e.Params (e.Some)>>> <ProcessStdin (<Card>) e.Params>;
+}
+
+ProcessFiles {
+    (e.If) (e.Of) (e.File) = <TsToE <Replace (e.If) (e.Of) <LoadFile e.File>>>;
+    'g' (e.If) (e.Of) (e.File) = <TsToE <Replace 'g' (e.If) (e.Of) <LoadFile e.File>>>;
+    (e.If) (e.Of) (e.File) e.Rest = <TsToE <Replace (e.If) (e.Of) <LoadFile e.File>>> '\n' <ProcessFiles (e.If) (e.Of) e.Rest>;
+    'g' (e.If) (e.Of) (e.File) e.Rest = <TsToE <Replace 'g' (e.If) (e.Of)  <LoadFile e.File>>> '\n' <ProcessFiles 'g' (e.If) (e.Of) e.Rest>;
+    
+    'g' (e.If) (e.Of) = ;
+    (e.If) (e.Of) = ;
+}
+
+Replace {
+    (e.If) (e.Of) (e.Begin e.If e.End) e.Rest = (e.Begin e.Of e.End) <Replace (e.If) (e.Of) e.Rest>;
+    (e.If) (e.Of) (e.Begin) e.Rest = (e.Begin) <Replace (e.If) (e.Of) e.Rest>;
+    (e.If) (e.Of) = ;
+    'g' (e.If) (e.Of) (e.Begin e.If e.End) e.Rest = (e.Begin e.Of <ReplaceAll (e.If) (e.Of) (e.End)>) <Replace 'g' (e.If) (e.Of) e.Rest>;
+    'g' (e.If) (e.Of) (e.End) e.Rest = (e.End) <Replace 'g' (e.If) (e.Of) e.Rest>;
+    'g' (e.If) (e.Of) = ;
+}
+ReplaceAll {
+    (e.If) (e.Of) (e.Begin e.If e.End) = e.Begin e.Of <ReplaceAll (e.If) (e.Of) (e.End)>;
+    (e.If) (e.Of) (e.Begin) = e.Begin;
+}
